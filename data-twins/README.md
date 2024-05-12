@@ -3,7 +3,7 @@
 
 `LinkCO89Guide.pdf` contains user guide and detailed information of the data.
 
-`covar_desc.txt` contains description of covarites.
+`covar_desc.txt` contains description of covariates.
 
 `covar_type.txt` contains types of covariates.
 
