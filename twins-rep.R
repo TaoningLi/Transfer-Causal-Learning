@@ -1,6 +1,6 @@
 
 #replicate under RCT
-repnum <- 20
+repnum <- 100
 colnum <- 5
 prob <- 0.4
 ATEmat.RR <- matrix(rep(0, repnum*colnum), nrow=repnum)
