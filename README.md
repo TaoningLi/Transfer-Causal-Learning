@@ -16,7 +16,7 @@ This is the code file for Advanced Statictical Applications (2024 Spring).
 
 `EDA.R` contains codes used for EDA in proposal.
 
-`TCL_proposal.Rmd` and `TCL_proposal.html` is the `.Rmd` and `.html` proposal file of this course.
+`TCL_proposal.Rmd` and `TCL_proposal.html` are the `.Rmd` and `.html` proposal file of this course.
 
 ## Acknowledgement
 
