@@ -1,0 +1,302 @@
+---
+title: "Proposal: Estimate causal effects by leveraing auxiliary information"
+author: "Taoning Li"
+date: "2024-03-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+The frequency of twin births has significantly increased in developed countries, doubling since the 1970s. Two main factors have contributed to this development, namely the rise in the use of medically assisted reproduction techniques, as well as a substantial increase in the mean age at childbearing (Pison et al., 2015). This `boom’ in the birth of twins constitutes a public health challenge, in that twins tend to have frailer health than singletons, at least during their early years. Compared to singletons, twins have lower birth weight, they tend to be born prematurely, and the deliveries are more complicated, all of which can potentially lead to long-term health problems.
+
+In this project, we are primarily interested in the causal effect of some factor (e.g., the weight of newborn twins) on mortality within one year. We are also interested in the methodology and theoretical guarantees on estimating average treatment effect (ATE), including the use of auxiliary information to improve the estimation of ATE in target domain.
+
+
+# Dataset: Twins
+
+The Twins dataset utilizes data from twin births in the USA between 1989-1991, which is a benchmark task for evaluating the estimation of causal treatment effect and was first introduced by (Louizos et.al, 2018). The original idea of the Twins dates back to (Almond et al, 2005). The unprocessed data source can be obtained at <https://www.nber.org/research/data/linked-birthinfant-death-cohort-data>, which contains the NBER (National Bureau of Economic Research) collection of Birth Cohort Linked Birth and Infant Death Data of the National Vital Statistics System of the National Center for Health Statistics. The user guide for the raw data can be obtained at <https://data.nber.org/lbid/docs/LinkCO89Guide.pdf>. Demographic data include variables such as date of birth, age, and educational attainment of parents, marital status, live-birth order, race, sex, and geographic area. Health data include items such as birth weight, gestation, prenatal care, attendant at birth, and Apgar score. Geographic data includes state, county, and city of mother's residence and state and county of the place of birth.
+
+The processed Twins dataset is available at <https://github.com/AMLab-Amsterdam/CEVAE/blob/master/datasets/TWINS>, which collects the births and deaths in the USA. Specifically, the treatment here is 'whether the infant is the heavier one of the twins', and the outcome is the mortality of the infant within one year. Twins dataset also record a list of covariates relating to the parents, the pregnancy and birth: mother and father education, marital status, race and residence; number of previous births; pregnancy risk factors such as diabetes, renal disease, smoking and alcohol use; quality of care during pregnancy; whether the birth was at a hospital, clinic or home; and number of gestation weeks prior to birth. It is noticeable that in this special dataset, under the potential outcome structure of Rubin, the potential outcome of the treatment and the control (mortality of the heavier and the lighter infant) are all observable and hence bias can be calculated to evaluate the performance of candidate estimation methods.
+
+In (Louizos et.al, 2018), only twins of the same sex are recorded, which is parallel to the processed dataset that we proposed. However, (Louizos et.al, 2018) considers twin pairs that both weigh less or equal than 2000 grams due to the outcome is quite rare (3.5% first-year mortality), where the proposed dataset includes weights of all twins with the same sex. We can treat all newborn twins less than 2000 g as the target domain and the remaining newborn twins as the source domain. This motivates us to use the information from the samples in source domain to better estimate the causal effect on the target domain. In addition, we are also strongly interested in leveraging the mortality information of twins that with different sex to better estimate the causal effect of the target domain.
+
+Since Twins dataset includes both treatment outcome and counterfactual outcome, we can also use Twins dataset to simulate observational dataset (Louizos et.al, 2018). This also motivates us to find methods to combine RCT and observational studies to estimate treatment effects. 
+
+
+# Explortary Data Analysis
+
+## Data Description
+
+We load the treatment, covariate and outcome dataset. Then we check the names, descriptions and types of covariates. All files are available at <https://github.com/AMLab-Amsterdam/CEVAE/blob/master/datasets/TWINS>.
+
+
+```{r twin, echo=TRUE}
+
+library(dplyr)
+library(ggplot2)
+
+#use read.csv to read files
+twin.Y <- read.csv("data_twins/twin_pairs_Y_3years_samesex.csv", header=TRUE, sep=",", stringsAsFactors = FALSE)
+twin.X <- read.csv("data_twins/twin_pairs_X_3years_samesex.csv", header=TRUE, sep=",", stringsAsFactors = FALSE)
+twin.T <- read.csv("data_twins/twin_pairs_T_3years_samesex.csv", header=TRUE, sep=",", stringsAsFactors = FALSE)
+
+#create ID for each pair of twins
+colnames(twin.X)[1]<-"ID"
+colnames(twin.T)[1]<-"ID"
+colnames(twin.Y)[1]<-"ID"
+
+twin.X <- twin.X[,-2]
+
+#check the head of covariates
+names(twin.X)
+
+#check the description of covariates
+readLines("data_twins/covar_desc.txt")->cov.desc
+print(cov.desc)
+
+#check the type of covariates
+readLines("data_twins/covar_type.txt")->cov.type
+print(cov.type)
+
+#check the heads of X,T,Y
+str(twin.X)
+head(twin.T)
+head(twin.Y)
+
+```
+Here, dbirwt_0/dbirwt_1 denotes the weight (gram) of the 0-th(lighter)/1-st(heavier) of one twin pair, mort_0/mort_1 denotes the mortality of the 0-th(lighter)/1-st(heavier) of one twin pair, respectively.
+
+## Data Cleaning and Pre-treatment
+```{r twincleaning, echo=TRUE}
+library(visdat)
+dplyr::slice_sample(twin.X,n = 1000)->twin.X.subsample
+twin.X.subsample %>% vis_miss()
+```
+
+It is obvious that there are missing values in the Twins dataset, which is always natural in practical datasets. Here we refer to (Cheng et al., 2022), whose real data analysis uses Twins dataset and deletes all samples that has missing values. We select 1000 samples randomly and study the missing pattern of the Twins dataset. 6.6% of the covariates are missing, including some important risk factors (e.g., tabacco 26% missing, alcohol 23% missing). (Kallaus et al., 2018) proposed a matrix factorization method to overcome the difficulty of missing data, and they selected the Twins dataset to evaluate the performance of this covariates completion method on the estimation of treatment effects. 
+
+We also notice that the missing pattern may not be missing completely at random (MCAR), which is assumed in (Kallaus et al., 2018). For example, data on alcohol and cigars (risk factors) are more likely to be missing for parents who consumes more alcohol and cigars. We may use an adaptive noiseless low-rank method to complete the missing covariates.
+
+
+## What influences the mortality of twin infants?
+We first summary the total numbers of mortality.
+
+```{r mort plot, echo=TRUE}
+library(patchwork)
+####
+m1m0 <- length(which(twin.Y[,2]==1 & twin.Y[,3]==1))
+m1s0 <- length(which(twin.Y[,2]==0 & twin.Y[,3]==1))
+s1m0 <- length(which(twin.Y[,2]==1 & twin.Y[,3]==0))
+s1s0 <- length(which(twin.Y[,2]==0 & twin.Y[,3]==0))
+
+mort.total<- data.frame(
+  category=c("mortality", "survival"),
+  count=c(m1m0+m1s0+s1m0, s1s0)
+)
+
+mort.total$fraction <- mort.total$count / sum(mort.total$count)
+
+# Compute the cumulative percentages (top of each rectangle)
+mort.total$ymax <- cumsum(mort.total$fraction)
+
+# Compute the bottom of each rectangle
+mort.total$ymin <- c(0, head(mort.total$ymax, n=-1))
+
+# Compute label position
+mort.total$labelPosition <- (mort.total$ymax + mort.total$ymin) / 2
+
+# Compute a good label
+mort.total$label <- paste0(mort.total$category, "\n value: ", mort.total$count)
+
+# Make the plot
+mort.plot1<- ggplot(mort.total, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=category)) +
+  geom_rect() +
+  geom_label( x=3.5, aes(y=labelPosition, label=label), size=5) +
+  scale_fill_brewer(palette=4) +
+  coord_polar(theta="y") +
+  xlim(c(2, 4)) +
+  theme_void() +
+  theme(legend.position = "none")
+
+mort <- data.frame(
+  category=c("both", "heavier(treatment)", "lighter(control)"),
+  count=c(m1m0, m1s0, s1m0)
+)
+
+mort$fraction <- mort$count / sum(mort$count)
+
+# Compute the cumulative percentages (top of each rectangle)
+mort$ymax <- cumsum(mort$fraction)
+
+# Compute the bottom of each rectangle
+mort$ymin <- c(0, head(mort$ymax, n=-1))
+
+# Compute label position
+mort$labelPosition <- (mort$ymax + mort$ymin) / 2
+
+# Compute a good label
+mort$label <- paste0(mort$category, "\n value: ", mort$count)
+
+# Make the plot
+mort.plot2<- ggplot(mort, aes(ymax=ymax, ymin=ymin, xmax=4, xmin=3, fill=category)) +
+             geom_rect() +
+             geom_label( x=3.5, aes(y=labelPosition, label=label), size=5) +
+             scale_fill_brewer(palette=4) +
+             coord_polar(theta="y") +
+             xlim(c(2, 4)) +
+             theme_void() +
+             theme(legend.position = "none")
+mort.plot <- mort.plot1 + mort.plot2
+plot(mort.plot)
+```
+
+It can be seen that among all the mortality recorded, the lighter twin has a higher mortality rate than the heavier twin. We know have a look at the feature of the distribution of the heavier twin and the lighter twin.
+
+```{r weight distribution, include=TRUE, results='hide'}
+library(gghalves)
+library(tidyr)
+
+twin.T2<-tidyr::gather(twin.T, Treatment, Weight, -ID)
+twin.T2.subsample<-dplyr::slice_sample(twin.T2,n = 1000)
+na.omit(twin.T2.subsample)
+
+twin.T2.subsample$Treatment <- as.factor(twin.T2.subsample$Treatment)
+
+
+ordercolors<-c("coral1","olivedrab3")
+weight.plot <- ggplot(twin.T2.subsample, aes(x=Treatment, y=Weight,fill=Treatment))+
+  geom_half_violin(side="r", color=NA, alpha=0.35, width=0.5)+
+  geom_half_boxplot(side = "r", errorbar.draw = FALSE, width=0.15, linewidth=0.5)+
+  geom_half_point_panel(side = "l", shape=21, size=2, color="white")+
+  scale_fill_manual(values = ordercolors) +
+  theme_classic() +
+  labs(x=NULL) 
+  theme(legend.position = "bottom",
+          axis.title = element_text(size = 16, color = "black"),
+          axis.text = element_text(size=13, color = "black"))
+  plot(weight.plot)
+
+```
+
+```{r plot weight distribution, echo=TRUE}
+
+summary(twin.T)
+```
+
+This plot shows the density and quantiles of the outcome on a random selected group with 1000 infants. It can be seen from the summary statistics that the average weight of the control group is 2261 grams, while the treatment group weighs 2545 grams on average. However, (Louizos et.al, 2018) considers twin pairs that both weigh less or equal than 2000 grams due to the outcome is quite rare, which is below than the average weight of both treatment groups and control groups. This motivates us to consider the CATE (conditional average treatment effect).
+
+Next we evaluate the correlation of risk factors. In the following analysis, we only use the cleaned samples that have fully observed covariates. Motivated by the former proposals, we study the correlations of the covariates. Since there are approximate 50 covariates, we only choose to study correlations between risk factors.
+
+```{r twin corrplot, include=TRUE, results='hide'}
+twin.X.clean<-na.omit(twin.X)
+risk.factor<-c('alcohol','anemia','cardiac','cigar6','chyper','diabetes', 'drink5','eclamp','gestat10','hemo','herpes','hydra','lung',      
+               'pre4000','preterm','rh','tobacco','uterine')
+twin.cov <- twin.X.clean %>%
+            select(all_of(risk.factor))
+twin.cor <- cor(twin.cov)
+m=par(no.readonly = TRUE)
+corrplot::corrplot(twin.cor, method = "color", type = "upper",tl.cex = 0.6 
+                   , tl.col="black",number.font = 2 )
+```
+It is noticeable that 'alcohol' is highly correlated to 'drink5', which are two factors that measures the alcohol consumption of the maternal. We also find a similar phenomenon between 'cigar5' and 'tobacco'. We also need to introduce a special covariate, 'gestat10', which describes the weeks of gestation of pregnant women. The smaller the 'gestat10', the shorter the pregnancy, and accordingly the higher the mortality risk. It is slightly correlated to 'hydra' (risk factor Hvdramnios/Oliqohvdramnios), 'pre4000' (risk factor Previous infant 4000+ grams), 'preterm' (risk factor Previos pre-term or small) and 'uterine' (risk factor Uterine bleeding).
+
+
+ 
+```{r risk factors plot, include=TRUE, results='hide'}
+library(ggradar)#you can download this package by commanding <remotes::install_github("ricardo-bion/ggradar")>
+library(tidyverse)
+library(scales)
+library(showtext)
+
+twin.Y.clean<-twin.Y[which(twin.Y$ID %in% twin.X.clean$ID),]
+twin.T.clean<-twin.T[which(twin.T$ID %in% twin.X.clean$ID),]
+
+#mortality set and survival set
+mort.set <- which((twin.Y[,2] == 1) | (twin.Y[,3] == 1))
+surv.set <- which((twin.Y[,2] == 0) & (twin.Y[,3] == 0))
+
+twin.total.clean <- merge(twin.X.clean, twin.Y.clean, by="ID")
+twin.total.clean <- merge(twin.total.clean, twin.T.clean, by="ID")
+attach(twin.total.clean)
+twin.total.clean$mort <- 1- (1-mort_1) * (1-mort_0) 
+
+twin.mort.clean <- twin.total.clean[which(twin.total.clean$ID %in% mort.set),]
+twin.surv.clean <- twin.total.clean[which(twin.total.clean$ID %in% surv.set),]
+
+twin.total.clean$mort <- as.factor(twin.total.clean$mort)
+#twin.total.clean$drink5 <- as.factor(twin.total.clean$drink5)
+
+mean_cigar6 <- mean(twin.total.clean$cigar6)
+mean_drink5 <- mean(twin.total.clean$drink5)
+mean_tobacco <- mean(twin.total.clean$tobacco)
+mean_alcohol <- mean(twin.total.clean$alcohol)
+mean_gestat10 <- mean(twin.total.clean$gestat10)
+mean_cardiac <- mean(twin.total.clean$cardiac)
+mean_diabetes <- mean(twin.total.clean$diabetes)
+mean_anemia <- mean(twin.total.clean$anemia)
+
+Twin.radar <- twin.total.clean %>%
+  group_by(mort_0, mort_1) %>%
+  summarise(
+    avg_cigar6 = mean(cigar6)/mean_cigar6,
+    avg_drink5 = mean(drink5)/mean_drink5,
+    avg_tobacco = mean(tobacco)/mean_tobacco,
+    avg_alcohol = mean(alcohol)/mean_alcohol,
+    avg_gestat10 = mean(gestat10)/mean_gestat10,
+    avg_cardiac = mean(cardiac)/mean_cardiac,
+    avg_diabetes = mean(diabetes)/mean_diabetes,
+    avg_anemia = mean(anemia)/mean_anemia,
+  ) 
+
+Twin.radar$mort.twin <-c("neither", "heaviear", "lighter", "both")
+Twin.radar$mort.twin <- as.factor(Twin.radar$mort.twin)
+Twin.radar <- Twin.radar %>%
+  group_by(mort.twin) 
+Twin.radar <- Twin.radar[,-grep("mort_0|mort_1",colnames(Twin.radar))]
+Twin.radar <- Twin.radar[,c(9,seq(1,8))]
+
+radar.plot <- Twin.radar %>%
+  ggradar(
+    grid.label.size = 4,  # Affects the grid annotations (0%, 50%, etc.)
+    axis.label.size = 4, # Afftects the names of the variables
+    group.point.size = 5,   # Simply the size of the point 
+    grid.min = 0.5,
+    grid.mid = 1,
+    grid.max = 2,
+    values.radar = c("50%","100%","200%")
+  )
+plot(radar.plot) 
+```
+
+The radar plot shows some influence of some risk factors on the mortality within one year of twins. Red line ('neither') is the benchmark that approximates the population average. The percent value is the ratio of average within each group (heavier, lighter, both of the twin dies). Higher consumption of cigarettes and alcohol are highly correlated with the mortality rate of the lighter twin. Lighter twin born to mothers with anemia and diabetes who weigh less are more likely to die within a year compared to healthy mothers.
+ 
+
+# Goals and Future Plans
+
+We could aim to use Twins dataset to ...
+
+1. apply basic causal inference methods and estimators then evaluate the efficiency of candidate methods. In this regime, since we can get access to the potential outcome under both treatments and controls, we can also simulate observation studies by hidding one of the outcome and adjust the probability of each twin pair to be observed. This may also test whether the estimator or method is robust on observational studies with selection bias. We also have to note that the class of covariates in Twins dataset are all category type, which may lead to a different analysis approach.
+
+2. propose or adapt a statistical method to transfer the information of source domain on the estimation of treatment effects on the target domain. We may use the raw data of NBER, but it is difficult to handle the covariates since the proposed Twins dataset has a totally different covariate pattern. 
+
+3. apply matrix completion methods on the missing covariates to better estimate the treatment effects. Since the observed covariates are the underground truth, we should propose a noiseless matrix completion method and algorithm to leverage the information of observed covariates and the low-rank structure of covariate matrix. Then we shall use the candidate method to study whether the method is efficient on estimating causal effects in comparison with simply deleting samples that have missing covariates. As we have stated in 1, the covariates are all category type. Existing matrix completion methods mostly don't place restrictions on elements. We can refer to some binary low-rank matrix completion methods and improve to better estimate causal effects.
+
+# References
+
+Pison, G., Monden, C., & Smits, J. (2015). Twinning rates in developed countries: Trends and explanations. Population and Development Review, 41(4), 629–649. https://doi.org/10.1111/j.1728-4457.2015.00088.x
+
+Louizos, C., Shalit, U., Mooij, J. M., Sontag, D., Zemel, R. S., & Welling, M. (2017a). Causal Effect Inference with Deep Latent-Variable Models. Neural Information Processing Systems, 30, 6446–6456. https://papers.nips.cc/paper/7223-causal-effect-inference-with-deep-latent-variable-models.pdf
+
+Almond, D., Chay, K. Y., & Lee, D. S. (2005). The costs of low birth weight*. The Quarterly Journal of Economics, 120(3), 1031–1083. https://doi.org/10.1162/003355305774268228
+
+Kallus, N., Mao, X., & Udell, M. (2018). Causal Inference with Noisy and Missing Covariates via Matrix Factorization. Neural Information Processing Systems, 31, 6921–6932. https://papers.nips.cc/paper/2018/file/86a1793f65aeef4aeef4b479fc9b2bca-Paper.pdf
+
+Cheng, D., Li, J., Liu, L., Le, T. D., Liu, J., & Yu, K. (2022). Sufficient dimension reduction for average causal effect estimation. Data Mining and Knowledge Discovery, 36(3), 1174–1196. https://doi.org/10.1007/s10618-022-00832-5
+
+Lee, C., Mastronarde, N., & Van Der Schaar, M. (2018). Estimation of individual treatment effect in latent confounder models via adversarial learning. arXiv (Cornell University). https://arxiv.org/pdf/1811.08943.pdf
+
+
