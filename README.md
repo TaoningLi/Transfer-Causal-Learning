@@ -18,4 +18,7 @@ This is the code file for Advanced Statictical Applications (2024 Spring).
 
 `TCL_proposal.Rmd` and `TCL_proposal.html` is the `.Rmd` and `.html` proposal file of this course.
 
+# Acknowledgement
+
+The author expresses gratitude to Prof. Ma for his support and guidance.
 
