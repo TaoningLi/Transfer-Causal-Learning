@@ -14,4 +14,7 @@ This is the code file for Advanced Statictical Applications (2024 Spring).
 
 `final_TCL.pdf` is the final report for this course.
 
+`EDA.R` contains codes used for EDA in proposal.
+
+
 
