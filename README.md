@@ -1,3 +1,6 @@
 # Transfer-Causal-Learning
 
-Data includes
+This is the code file for Advanced Statictical Applications (2024 Spring).
+
+##
+`data` file contains raw data and descriptions.
